@@ -1,34 +1,55 @@
 use rand::prelude::*;
 use std::{f64::consts::PI, fmt};
+
+pub trait NoiseMachine {
+    fn new() -> Self;
+    fn from_seed(seed: u64) -> Self;
+    fn set_seed(&mut self, seed: u64);
+    fn seed(&self) -> u64;
+    fn sample_raw(&self, dim: usize, pos: &Vec<f64>) -> f64;
+    fn sample(
+        &self,
+        dim: usize,
+        pos: &Vec<f64>,
+        scale: &Vec<f64>,
+        offset: &Vec<f64>,
+        weight: f64,
+        bias: f64,
+    ) -> f64;
+    fn sample_tileable(
+        &self,
+        dim: usize,
+        pos: &Vec<f64>,
+        scale: &Vec<f64>,
+        offset: &Vec<f64>,
+        weight: f64,
+        bias: f64,
+    ) -> f64;
+    fn generate_map(
+        &self,
+        dim: usize,
+        scale: &Vec<f64>,
+        offset: &Vec<f64>,
+        weight: f64,
+        bias: f64,
+    ) -> NoiseMap<Self> {
+        NoiseMap::<Self> {
+            machine: self,
+            dim,
+            scale: scale.clone(),
+            offset: offset.clone(),
+            weight,
+            bias,
+        }
+    }
+}
+
 #[derive(Clone)]
-pub struct NoiseMachine {
+pub struct PerlinMachine where {
     seed: u64,
     randoms: [usize; usize::BITS as usize],
 }
-impl NoiseMachine {
-    pub fn new() -> Self {
-        let seed = thread_rng().gen();
-        let mut rng = StdRng::seed_from_u64(seed);
-        let mut randoms = [0; usize::BITS as usize];
-        rng.fill(&mut randoms);
-        Self { seed, randoms }
-    }
-    pub fn from_seed(seed: u64) -> Self {
-        let mut rng = StdRng::seed_from_u64(seed);
-        let mut randoms = [0; usize::BITS as usize];
-        rng.fill(&mut randoms);
-        Self { seed, randoms }
-    }
-    pub fn set_seed(&mut self, seed: u64) {
-        let mut rng = StdRng::seed_from_u64(seed);
-        let mut randoms = [0; usize::BITS as usize];
-        rng.fill(&mut randoms);
-        self.seed = seed;
-        self.randoms = randoms;
-    }
-    pub fn seed(&self) -> u64 {
-        self.seed
-    }
+impl PerlinMachine {
     fn corner_dot(&self, corner: &Vec<u32>, sample: &Vec<f64>) -> f64 {
         let dim = sample.len();
         let grad = self.get_gradient(&corner);
@@ -67,7 +88,32 @@ impl NoiseMachine {
         }
         vector
     }
-    pub fn sample_raw(&self, dim: usize, pos: &Vec<f64>) -> f64 {
+}
+impl NoiseMachine for PerlinMachine {
+    fn new() -> Self {
+        let seed = thread_rng().gen();
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut randoms = [0; usize::BITS as usize];
+        rng.fill(&mut randoms);
+        Self { seed, randoms }
+    }
+    fn from_seed(seed: u64) -> Self {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut randoms = [0; usize::BITS as usize];
+        rng.fill(&mut randoms);
+        Self { seed, randoms }
+    }
+    fn set_seed(&mut self, seed: u64) {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut randoms = [0; usize::BITS as usize];
+        rng.fill(&mut randoms);
+        self.seed = seed;
+        self.randoms = randoms;
+    }
+    fn seed(&self) -> u64 {
+        self.seed
+    }
+    fn sample_raw(&self, dim: usize, pos: &Vec<f64>) -> f64 {
         let dim = dim.clamp(1, usize::BITS as usize);
         let pos: Vec<f64> = pos
             .iter()
@@ -99,7 +145,7 @@ impl NoiseMachine {
         }
         out[0]
     }
-    pub fn sample(
+    fn sample(
         &self,
         dim: usize,
         pos: &Vec<f64>,
@@ -118,7 +164,7 @@ impl NoiseMachine {
         }) * weight
             + bias
     }
-    pub fn sample_tileable(
+    fn sample_tileable(
         &self,
         dim: usize,
         pos: &Vec<f64>,
@@ -142,35 +188,16 @@ impl NoiseMachine {
         }) * weight
             + bias
     }
-
-    pub fn generate_map(
-        &self,
-        dim: usize,
-        scale: &Vec<f64>,
-        offset: &Vec<f64>,
-        weight: f64,
-        bias: f64,
-    ) -> NoiseMap {
-        NoiseMap {
-            machine: self,
-            dim,
-            scale: scale.clone(),
-            offset: offset.clone(),
-            weight,
-            bias,
-        }
-    }
 }
-
-impl fmt::Debug for NoiseMachine{
+impl fmt::Debug for PerlinMachine {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "NoiseMachine{{seed: {}}}", self.seed)
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct NoiseMap<'a> {
-    machine: &'a NoiseMachine,
+pub struct NoiseMap<'a, T> where T: NoiseMachine + ?Sized {
+    machine: &'a T,
     dim: usize,
     scale: Vec<f64>,
     offset: Vec<f64>,
@@ -178,7 +205,7 @@ pub struct NoiseMap<'a> {
     bias: f64,
 }
 
-impl<'a> NoiseMap<'a> {
+impl<'a, T> NoiseMap<'a, T>  where T: NoiseMachine {
     pub fn sample(&self, pos: &Vec<f64>) -> f64 {
         self.machine.sample(
             self.dim,
@@ -199,7 +226,7 @@ impl<'a> NoiseMap<'a> {
             self.bias,
         )
     }
-    pub fn machine(&self) -> &'a NoiseMachine {
+    pub fn machine(&self) -> &'a T {
         self.machine
     }
     pub fn dim(&self) -> usize {

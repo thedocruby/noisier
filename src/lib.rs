@@ -1,5 +1,5 @@
 extern crate rand;
 
-mod perlin_plus;
+mod noisier;
 
-pub use perlin_plus::NoiseMachine;
+pub use noisier::NoiseMachine;

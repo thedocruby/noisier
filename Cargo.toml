@@ -8,4 +8,4 @@ repository = "https://github.com/Lapz/perlin_noise"
 description = "A simple perlin noise implementation in Rust"
 
 [dependencies]
-rand ="0.5.0" 
+rand = { version = "0.8.5", features = ["std_rng"] }

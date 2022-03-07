@@ -1,12 +1,10 @@
 extern crate sorting_rs as sort;
-extern crate rand;
+extern crate rand as rand;
 use self::rand::prelude::*;
 use self::sort::*;
 use std::{f64::consts::PI, fmt};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 
-pub trait NoiseMachine<'a> {
+pub trait NoiseMachine<'a, const RES: usize> {
     fn new() -> Self;
     fn from_seed(seed: u64) -> Self;
     fn set_seed(&'a mut self, seed: u64);
@@ -69,8 +67,8 @@ pub trait NoiseMachine<'a> {
         offset: &Vec<f64>,
         weight: f64,
         bias: f64,
-    ) -> ContinuousNoise<'a, Self> {
-        ContinuousNoise::<'a, Self>::new(
+    ) -> ContinuousNoise<'a, Self, RES> {
+        ContinuousNoise::<'a, Self, RES>::new(
             self,
             dim,
             scale.clone(),
@@ -86,8 +84,8 @@ pub trait NoiseMachine<'a> {
         offset: &Vec<f64>,
         weight: f64,
         bias: f64,
-    ) -> RecurrentNoise<'a, Self> {
-        RecurrentNoise::<'a, Self>::new(
+    ) -> RecurrentNoise<'a, Self, RES> {
+        RecurrentNoise::<'a, Self, RES>::new(
             self,
             dim,
             scale.clone(),
@@ -99,11 +97,12 @@ pub trait NoiseMachine<'a> {
 }
 
 #[derive(Clone)]
-pub struct PerlinNoiseMachine where {
+pub struct PerlinNoiseMachine<const RES: usize> where {
     seed: u64,
-    randoms: [u64; usize::BITS as usize],
+    rand: [usize; usize::BITS as usize],
+    perm: [usize; RES],
 }
-impl PerlinNoiseMachine {
+impl <const RES: usize> PerlinNoiseMachine<RES> {
     fn corner_dot(&self, corner: &Vec<u32>, sample: &Vec<f64>) -> f64 {
         let dim = sample.len();
         let grad = self.get_gradient(&corner);
@@ -115,48 +114,71 @@ impl PerlinNoiseMachine {
     }
     fn get_gradient(&self, corner: &Vec<u32>) -> Vec<f64> {
         let dim = corner.len();
+        let p = self.perm;
+        if dim == 1 {
+            return vec![(p[corner[0] as usize % RES] / (RES - 1) * 2 - 1) as f64];
+        }
         let mut angles: Vec<f64> = Vec::with_capacity(dim - 1);
-        let mut vector = Vec::with_capacity(dim);
+        let mut vector = vec![1.0; dim];
         for i in 0..dim - 1 {
-            let mut s = DefaultHasher::new();
-            self.randoms[i].hash(&mut s);
-            corner.hash(&mut s);
-            dim.hash(&mut s);
-            let random = s.finish();
-            angles.push((random as f64 / u64::MAX as f64) * 2.0 * PI);
-            vector.push(1.0);
+            let mut random = self.rand[i];
+            for coord in corner {
+                random = p[(random + (*coord as usize % RES)) % RES]
+            }
+            angles.push((random as f64 / (RES - 1) as f64) * 2.0 * PI);
             for k in 0..i {
                 vector[i] *= angles[k].sin();
             }
             vector[i] *= angles[i].cos();
-        }
-        vector.push(1.0);
-        for i in 0..dim - 1 {
             vector[dim - 1] *= angles[i].sin();
         }
         vector
     }
 }
-impl <'a> NoiseMachine<'a> for PerlinNoiseMachine {
+impl <'a, const RES: usize> NoiseMachine<'a, RES> for PerlinNoiseMachine<RES> {
     fn new() -> Self {
         let seed = thread_rng().gen();
         let mut rng = StdRng::seed_from_u64(seed);
-        let mut randoms = [0; usize::BITS as usize];
-        rng.fill(&mut randoms);
-        Self { seed, randoms }
+        let mut rand = [0usize; usize::BITS as usize];
+        for val in rand.iter_mut(){
+            *val = rng.gen_range(0..RES)
+        };
+        let mut perm = [0usize; RES];
+        for i in 0..RES{
+            perm[i] = i;
+        };
+        perm.shuffle(&mut rng);
+        Self { seed, perm, rand }
     }
     fn from_seed(seed: u64) -> Self {
         let mut rng = StdRng::seed_from_u64(seed);
-        let mut randoms = [0; usize::BITS as usize];
-        rng.fill(&mut randoms);
-        Self { seed, randoms }
+        let mut rand = [0usize; usize::BITS as usize];
+        for val in rand.iter_mut(){
+            *val = rng.gen_range(0..RES)
+        };
+        let mut perm = [0usize; RES];
+        for i in 0..RES{
+            perm[i] = i;
+        };
+        perm.shuffle(&mut rng);
+        Self { seed, perm, rand }
     }
     fn set_seed(&'a mut self, seed: u64) {
-        let mut rng = StdRng::seed_from_u64(seed);
-        let mut randoms = [0; usize::BITS as usize];
-        rng.fill(&mut randoms);
         self.seed = seed;
-        self.randoms = randoms;
+        let mut rng = StdRng::seed_from_u64(seed);
+        {
+            let mut rand = [0usize; usize::BITS as usize];
+            for val in rand.iter_mut(){
+                *val = rng.gen_range(0..RES)
+            };
+            self.rand = rand;
+        }
+        let mut perm = [0usize; RES];
+        for i in 0..RES{
+            perm[i] = i;
+        };
+        perm.shuffle(&mut rng);
+        self.perm = perm;
     }
     fn seed(&'a self) -> u64 {
         self.seed
@@ -192,66 +214,90 @@ impl <'a> NoiseMachine<'a> for PerlinNoiseMachine {
             }
             out.clone_from(&new_out);
         }
-        (out[0] * 5.0 / 3.0).clamp(-1.0, 1.0)
+        out[0]
     }
 }
-impl fmt::Debug for PerlinNoiseMachine {
+impl <const RES: usize> fmt::Debug for PerlinNoiseMachine::<RES> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "PerlinNoiseMachine{{seed: {}}}", self.seed)
     }
 }
 
 #[derive(Clone)]
-pub struct SimplexNoiseMachine where {
+pub struct SimplexNoiseMachine<const RES: usize> where {
     seed: u64,
-    randoms: [u64; usize::BITS as usize],
+    rand: [usize; usize::BITS as usize],
+    perm: [usize; RES],
 }
-impl SimplexNoiseMachine {
+impl <const RES: usize> SimplexNoiseMachine<RES> {
     fn get_gradient(&self, corner: &Vec<f64>) -> Vec<f64> {
         let dim = corner.len();
+        let p = self.perm;
+        if dim == 1 {
+            return vec![(p[corner[0] as usize % RES] / (RES - 1) * 2 - 1) as f64];
+        }
         let mut angles: Vec<f64> = Vec::with_capacity(dim - 1);
-        let mut vector = Vec::with_capacity(dim);
+        let mut vector = vec![1.0; dim];
         for i in 0..dim - 1 {
-            let mut s = DefaultHasher::new();
-            self.randoms[i].hash(&mut s);
-            let corner: Vec<u32> = corner.iter().map(|float| float.clone() as u32).collect();
-            corner.hash(&mut s);
-            dim.hash(&mut s);
-            let random = s.finish();
-            angles.push((random as f64 / u64::MAX as f64) * 2.0 * PI);
-            vector.push(1.0);
+            let mut random = self.rand[i];
+            for coord in corner {
+                random = p[(random + (*coord as usize % RES)) % RES]
+            }
+            angles.push((random as f64 / (RES - 1) as f64) * 2.0 * PI);
             for k in 0..i {
                 vector[i] *= angles[k].sin();
             }
             vector[i] *= angles[i].cos();
-        }
-        vector.push(1.0);
-        for i in 0..dim - 1 {
             vector[dim - 1] *= angles[i].sin();
         }
         vector
     }
 }
-impl <'a> NoiseMachine<'a> for SimplexNoiseMachine{
+impl <'a, const RES: usize> NoiseMachine<'a, RES> for SimplexNoiseMachine<RES> {
+    
     fn new() -> Self {
         let seed = thread_rng().gen();
         let mut rng = StdRng::seed_from_u64(seed);
-        let mut randoms = [0; usize::BITS as usize];
-        rng.fill(&mut randoms);
-        Self { seed, randoms }
+        let mut rand = [0usize; usize::BITS as usize];
+        for val in rand.iter_mut(){
+            *val = rng.gen_range(0..RES)
+        };
+        let mut perm = [0usize; RES];
+        for i in 0..RES{
+            perm[i] = i;
+        };
+        perm.shuffle(&mut rng);
+        Self { seed, perm, rand }
     }
     fn from_seed(seed: u64) -> Self {
         let mut rng = StdRng::seed_from_u64(seed);
-        let mut randoms = [0; usize::BITS as usize];
-        rng.fill(&mut randoms);
-        Self { seed, randoms }
+        let mut rand = [0usize; usize::BITS as usize];
+        for val in rand.iter_mut(){
+            *val = rng.gen_range(0..RES)
+        };
+        let mut perm = [0usize; RES];
+        for i in 0..RES{
+            perm[i] = i;
+        };
+        perm.shuffle(&mut rng);
+        Self { seed, perm, rand }
     }
     fn set_seed(&'a mut self, seed: u64) {
-        let mut rng = StdRng::seed_from_u64(seed);
-        let mut randoms = [0; usize::BITS as usize];
-        rng.fill(&mut randoms);
         self.seed = seed;
-        self.randoms = randoms;
+        let mut rng = StdRng::seed_from_u64(seed);
+        {
+            let mut rand = [0usize; usize::BITS as usize];
+            for val in rand.iter_mut(){
+                *val = rng.gen_range(0..RES)
+            };
+            self.rand = rand;
+        }
+        let mut perm = [0usize; RES];
+        for i in 0..RES{
+            perm[i] = i;
+        };
+        perm.shuffle(&mut rng);
+        self.perm = perm;
     }
     fn seed(&'a self) -> u64 {
         self.seed
@@ -376,13 +422,13 @@ impl <'a> NoiseMachine<'a> for SimplexNoiseMachine{
         vals[0]
     }
 }
-impl fmt::Debug for SimplexNoiseMachine {
+impl <const RES: usize> fmt::Debug for SimplexNoiseMachine<RES> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "SimplexNoiseMachine {{ seed: {} }}", self.seed)
     }
 }
 
-pub trait NoiseBuffer<'a, T> where T: NoiseMachine<'a> + ?Sized {
+pub trait NoiseBuffer<'a, T, const RES: usize> where T: NoiseMachine<'a, RES> + ?Sized {
     fn sample(&'a self, pos: &Vec<f64>) -> f64;
     fn machine(&'a self) -> &'a T;
     fn dim(&'a self) -> usize;
@@ -400,7 +446,7 @@ pub trait NoiseBuffer<'a, T> where T: NoiseMachine<'a> + ?Sized {
     ) -> Self;
 }
 #[derive(Clone, Debug)]
-pub struct ContinuousNoise<'a, T> where T: NoiseMachine<'a> + ?Sized {
+pub struct ContinuousNoise<'a, T, const RES: usize> where T: NoiseMachine<'a, RES> + ?Sized {
     machine: &'a T,
     dim: usize,
     scale: Vec<f64>,
@@ -409,7 +455,7 @@ pub struct ContinuousNoise<'a, T> where T: NoiseMachine<'a> + ?Sized {
     bias: f64,
 }
 
-impl<'a, T> NoiseBuffer<'a, T> for ContinuousNoise<'a, T> where T: NoiseMachine<'a> + ?Sized {
+impl <'a, T, const RES: usize> NoiseBuffer<'a, T, RES> for ContinuousNoise<'a, T, RES> where T: NoiseMachine<'a, RES> + ?Sized {
     fn sample(&'a self, pos: &Vec<f64>) -> f64 {
         self.machine.sample(
             self.dim,
@@ -460,7 +506,7 @@ impl<'a, T> NoiseBuffer<'a, T> for ContinuousNoise<'a, T> where T: NoiseMachine<
     }
 }
 #[derive(Clone, Debug)]
-pub struct RecurrentNoise<'a, T> where T: NoiseMachine<'a> + ?Sized {
+pub struct RecurrentNoise<'a, T, const RES: usize> where T: NoiseMachine<'a, RES> + ?Sized {
     machine: &'a T,
     dim: usize,
     scale: Vec<f64>,
@@ -469,7 +515,7 @@ pub struct RecurrentNoise<'a, T> where T: NoiseMachine<'a> + ?Sized {
     bias: f64,
 }
 
-impl<'a, T> NoiseBuffer<'a, T> for RecurrentNoise<'a, T> where T: NoiseMachine<'a> + ?Sized {
+impl <'a, T, const RES: usize> NoiseBuffer<'a, T, RES> for RecurrentNoise<'a, T, RES> where T: NoiseMachine<'a, RES> + ?Sized {
     fn sample(&self, pos: &Vec<f64>) -> f64 {
         self.machine.sample_tileable(
             self.dim,

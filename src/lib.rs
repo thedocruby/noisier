@@ -25,8 +25,8 @@ mod tests {
         const WIDTH: u32 = 256;
         const HEIGHT: u32 = 256;
 
-        let machine = SimplexNoiseMachine::new();
-        let buffer = machine.gen_recurrent(2, &vec![4.0; 2], &vec![0.0; 2], 1.0, 0.0);
+        let machine = PerlinNoiseMachine::<256>::new();
+        let buffer = machine.gen_continuous(2, &vec![4.0; 2], &vec![0.0; 2], 1.0, 0.0);
         
         {
             let mut image: RgbImage = RgbImage::new(WIDTH, HEIGHT);
@@ -38,8 +38,6 @@ mod tests {
                     {
                         //let val = buffer.sample(&vec![((i + WIDTH/2) % WIDTH) as f64 / WIDTH as f64, ((j + HEIGHT/2) % HEIGHT) as f64 / HEIGHT as f64]);
                         let val = buffer.sample(&vec![i as f64 / WIDTH as f64, j as f64 / HEIGHT as f64]);
-                        minimum = minimum.min(val as f64);
-                        maximum = maximum.max(val as f64);
                         Rgb::from([
                             ((val + 1.0) * 127.5).round().max(0.0) as u8,
                             ((val + 1.0) * 127.5).round().max(0.0) as u8,

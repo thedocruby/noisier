@@ -1,5 +1,10 @@
-use rand::prelude::*;
+extern crate sorting_rs as sort;
+extern crate rand;
+use self::rand::prelude::*;
+use self::sort::*;
 use std::{f64::consts::PI, fmt};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 pub trait NoiseMachine<'a> {
     fn new() -> Self;
@@ -57,15 +62,32 @@ pub trait NoiseMachine<'a> {
         }) * weight
             + bias
     }
-    fn generate_buffer<T>(
+    fn gen_continuous(
         &'a self,
         dim: usize,
         scale: &Vec<f64>,
         offset: &Vec<f64>,
         weight: f64,
         bias: f64,
-    ) -> T where T: NoiseBuffer<'a, Self> {
-        T::new(
+    ) -> ContinuousNoise<'a, Self> {
+        ContinuousNoise::<'a, Self>::new(
+            self,
+            dim,
+            scale.clone(),
+            offset.clone(),
+            weight,
+            bias,
+        )
+    }
+    fn gen_recurrent(
+        &'a self,
+        dim: usize,
+        scale: &Vec<f64>,
+        offset: &Vec<f64>,
+        weight: f64,
+        bias: f64,
+    ) -> RecurrentNoise<'a, Self> {
+        RecurrentNoise::<'a, Self>::new(
             self,
             dim,
             scale.clone(),
@@ -77,11 +99,11 @@ pub trait NoiseMachine<'a> {
 }
 
 #[derive(Clone)]
-pub struct PerlinMachine where {
+pub struct PerlinNoiseMachine where {
     seed: u64,
-    randoms: [usize; usize::BITS as usize],
+    randoms: [u64; usize::BITS as usize],
 }
-impl PerlinMachine {
+impl PerlinNoiseMachine {
     fn corner_dot(&self, corner: &Vec<u32>, sample: &Vec<f64>) -> f64 {
         let dim = sample.len();
         let grad = self.get_gradient(&corner);
@@ -93,21 +115,15 @@ impl PerlinMachine {
     }
     fn get_gradient(&self, corner: &Vec<u32>) -> Vec<f64> {
         let dim = corner.len();
-        if dim == 1 {
-            return vec![
-                self.randoms[0].overflowing_pow(corner[0] + 1).0 as f64 / usize::MAX as f64 * 2.0
-                    - 1.0,
-            ];
-        }
         let mut angles: Vec<f64> = Vec::with_capacity(dim - 1);
         let mut vector = Vec::with_capacity(dim);
         for i in 0..dim - 1 {
-            let mut random = self.randoms[i];
-            for j in 0..dim {
-                random = random.overflowing_pow(corner[j] + 1).0;
-            }
-            random = random.overflowing_pow(dim as u32).0;
-            angles.push((random as f64 / usize::MAX as f64) * 2.0 * PI);
+            let mut s = DefaultHasher::new();
+            self.randoms[i].hash(&mut s);
+            corner.hash(&mut s);
+            dim.hash(&mut s);
+            let random = s.finish();
+            angles.push((random as f64 / u64::MAX as f64) * 2.0 * PI);
             vector.push(1.0);
             for k in 0..i {
                 vector[i] *= angles[k].sin();
@@ -121,7 +137,7 @@ impl PerlinMachine {
         vector
     }
 }
-impl <'a> NoiseMachine<'a> for PerlinMachine {
+impl <'a> NoiseMachine<'a> for PerlinNoiseMachine {
     fn new() -> Self {
         let seed = thread_rng().gen();
         let mut rng = StdRng::seed_from_u64(seed);
@@ -176,21 +192,47 @@ impl <'a> NoiseMachine<'a> for PerlinMachine {
             }
             out.clone_from(&new_out);
         }
-        out[0]
+        (out[0] * 5.0 / 3.0).clamp(-1.0, 1.0)
     }
 }
-impl fmt::Debug for PerlinMachine {
+impl fmt::Debug for PerlinNoiseMachine {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "PerlinMachine{{seed: {}}}", self.seed)
+        write!(f, "PerlinNoiseMachine{{seed: {}}}", self.seed)
     }
 }
 
 #[derive(Clone)]
-pub struct SimplexMachine where {
+pub struct SimplexNoiseMachine where {
     seed: u64,
-    randoms: [usize; usize::BITS as usize],
+    randoms: [u64; usize::BITS as usize],
 }
-impl <'a> NoiseMachine<'a> for SimplexMachine{
+impl SimplexNoiseMachine {
+    fn get_gradient(&self, corner: &Vec<f64>) -> Vec<f64> {
+        let dim = corner.len();
+        let mut angles: Vec<f64> = Vec::with_capacity(dim - 1);
+        let mut vector = Vec::with_capacity(dim);
+        for i in 0..dim - 1 {
+            let mut s = DefaultHasher::new();
+            self.randoms[i].hash(&mut s);
+            let corner: Vec<u32> = corner.iter().map(|float| float.clone() as u32).collect();
+            corner.hash(&mut s);
+            dim.hash(&mut s);
+            let random = s.finish();
+            angles.push((random as f64 / u64::MAX as f64) * 2.0 * PI);
+            vector.push(1.0);
+            for k in 0..i {
+                vector[i] *= angles[k].sin();
+            }
+            vector[i] *= angles[i].cos();
+        }
+        vector.push(1.0);
+        for i in 0..dim - 1 {
+            vector[dim - 1] *= angles[i].sin();
+        }
+        vector
+    }
+}
+impl <'a> NoiseMachine<'a> for SimplexNoiseMachine{
     fn new() -> Self {
         let seed = thread_rng().gen();
         let mut rng = StdRng::seed_from_u64(seed);
@@ -221,22 +263,122 @@ impl <'a> NoiseMachine<'a> for SimplexMachine{
             .iter()
             .map(|x| x.abs().clamp(0.0, (u32::MAX - usize::BITS) as f64))
             .collect();
-        let f = ((dim as f64 + 1.0).sqrt() - 1.0) / dim as f64;
-        let g = (1.0 - 1.0/(dim as f64 + 1.0).sqrt()) / dim as f64;
-        let sum: f64 = pos.iter().sum();
+        let in_pos = pos.clone();
         let mut pos0 = Vec::with_capacity(dim);
         let mut δ_pos = Vec::with_capacity(dim);
-        for i in 0..dim{
-            pos[i] += sum * f;
-            pos0.push(pos[i].floor() as u32);
-            δ_pos.push(pos[i] - pos0[i] as f64);
+        {
+            let f = ((dim as f64 + 1.0).sqrt() - 1.0) / dim as f64;
+            let sum: f64 = pos.iter().sum();
+            for i in 0..dim{
+                pos[i] += sum * f;
+                pos0.push(pos[i].floor() as u32);
+                δ_pos.push((pos[i] - pos0[i] as f64, i));
+            }
+            heap_sort(&mut δ_pos);
         }
-        todo!()
+        let mut corners: Vec<Vec<f64>> = Vec::new();
+        let mut grads: Vec<Vec<f64>> = Vec::new();
+        {
+            let mut corner: Vec<f64> = vec![0.0; dim];
+            corners.push({
+                let mut this_corner = corner.clone();
+                for j in 0..dim {
+                    this_corner[j] += pos0[j] as f64;
+                }
+                grads.push(self.get_gradient(&this_corner));
+                this_corner
+            });
+            for i in (0..dim).rev() {
+                corner[δ_pos[i].1] = 1.0;
+                corners.push({
+                    let mut this_corner = corner.clone();
+                    for j in 0..dim {
+                        this_corner[j] += pos0[j] as f64;
+                    }
+                    grads.push(self.get_gradient(&this_corner));
+                    this_corner
+                });
+            }
+            let g = (1.0 - 1.0/(dim as f64 + 1.0).sqrt()) / dim as f64;
+            for corner in corners.iter_mut() {
+                let sum: f64 = corner.iter().sum();
+                for i in 0..dim {
+                    corner[i] -= sum * g;
+                }
+            }
+        }
+        let mut d_squared = Vec::new();
+        let mut dot_prod = Vec::new();
+        {
+            let mut δ_corners = Vec::new();
+            for corner in corners.iter() {
+                let mut δ_corner = Vec::new();
+                for i in 0..dim {
+                    δ_corner.push(in_pos[i] - corner[i]);
+                }
+                δ_corners.push(δ_corner);
+            }
+            for i in 0..(dim + 1) {
+                let δ_corner = δ_corners[i].clone();
+                let mut d_squared_sum: f64 = 0.0;
+                let mut dot_prod_sum: f64 = 0.0;
+                for j in 0..dim {
+                    let coord = δ_corner[j];
+                    d_squared_sum += coord * coord;
+                    dot_prod_sum += coord * grads[i][j];
+                }
+                d_squared.push(d_squared_sum);
+                dot_prod.push(dot_prod_sum);
+            }
+        }
+        let mut output = Vec::new();
+        {
+            for i in 0..(dim + 1) {
+                let c = 0.0f64.max(0.5 - d_squared[i]);
+                output.push(c * c * c * c * dot_prod[i]);
+            }
+        }
+        output.iter().sum::<f64>() * 100.0
+    }
+    fn sample_tileable(
+        &'a self,
+        dim: usize,
+        pos: &Vec<f64>,
+        scale: &Vec<f64>,
+        offset: &Vec<f64>,
+        weight: f64,
+        bias: f64,
+    ) -> f64 {
+        let lerp = |x, a, b| (b - a) * x + a;
+        let mut pow = 2usize.pow(dim as u32);
+        let mut corners = Vec::with_capacity(pow);
+        let mut vals = Vec::with_capacity(pow);
+        for i in 0..pow {
+            let mut corner = Vec::new();
+            let mut this_pos = pos.clone();
+            let this_scale: Vec<f64> = scale.iter().map(|x| 2.0 * x).collect();
+            for j in 0..dim {
+                corner.push((i >> j) % 2);
+                this_pos[j] += corner[j] as f64;
+                this_pos[j] /= 2.0;
+            }
+            corners.push(corner);
+            vals.push(self.sample(dim, &this_pos, &this_scale, offset, weight, bias));
+        }
+        for i in 0..dim {
+            pow /= 2;
+            let mut new_vals = Vec::with_capacity(pow);
+            for j in 0..pow {
+                new_vals.push(lerp(pos[i], vals[j*2+1], vals[j*2]));
+            }
+            vals = new_vals;
+        }
+        vals[0]
     }
 }
-impl fmt::Debug for SimplexMachine {
+impl fmt::Debug for SimplexNoiseMachine {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "SimplexMachine{{seed: {}}}", self.seed)
+        write!(f, "SimplexNoiseMachine {{ seed: {} }}", self.seed)
     }
 }
 
